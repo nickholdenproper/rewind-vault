@@ -32,6 +32,10 @@ process.env.OC_PLAIN = "1"
 process.env.OC_WIDTH = "100"
 process.env.OC_ROWS = "40"
 process.env.OC_DRY_RUN = "1"
+// Archiving is folder-agnostic now, so this test would otherwise read the real
+// session database and spend its timeout exporting the user's own sessions.
+process.env.OPENCODE_BIN = new URL("./fixtures/fake-opencode.mjs", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")
+process.env.FAKE_OPENCODE_ROWS = "[]"
 await fsp.mkdir(home, { recursive: true })
 
 const launcher = await import("../launcher.mjs")
@@ -112,7 +116,7 @@ await check("the answer is written to config.json, not just remembered", async (
 
 await check("the second run goes straight to the menu", async () => {
   const running = run([])
-  await until("Start opencode without a session")
+  await until("Clear all history")
   assert.equal(plain(full).includes("Where should rewind keep"), false)
   await keys([ESC])
   await running

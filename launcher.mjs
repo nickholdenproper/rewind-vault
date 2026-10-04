@@ -29,8 +29,6 @@ import {
 } from "./lib/ui.mjs"
 
 const SUBCOMMAND = "history"
-const RECENT_LIMIT = 15
-
 function fallbackDir() {
   return process.cwd()
 }
@@ -60,7 +58,7 @@ async function ensureVault({ interactive = true } = {}) {
   const vault = await prepareVault(chosen)
   store.setVault(vault)
   await writeConfig({ ...config, vault })
-  return { vault, asked: true, remembered: config.lastProject?.folder }
+  return { vault, asked: true }
 }
 
 function groupBy(items, key) {
@@ -84,12 +82,11 @@ function totalBytes(entries) {
 }
 
 /**
- * Auto-archived sessions carry the project they belong to, so they group under
- * it. Anything saved by hand has no project, and falls back to the day it was
- * archived, which is how the load screen has always grouped them.
+ * Archived sessions group by the day they were saved. There is no project to
+ * belong to any more: a session is kept because it happened, wherever it ran.
  */
 function savedGroups(entries) {
-  return groupBy(entries, (entry) => entry.project || dayGroup(entry.savedAt)).map((group) => ({
+  return groupBy(entries, (entry) => dayGroup(entry.savedAt)).map((group) => ({
     label: group.label,
     items: group.items.map((entry) => ({
       value: entry,
@@ -238,94 +235,6 @@ async function launchAndArchive(launch, label, note) {
   return code
 }
 
-async function newProjectFlow() {
-  const config = await readConfig()
-  const remembered = config.lastProject?.folder
-  const suggestion = remembered ? path.basename(path.resolve(remembered)) : ""
-
-  const name = await promptText({
-    title: "Name this project:",
-    hint: "letters, digits, spaces, . - _ only",
-    initial: suggestion,
-    validate: store.validateLabel,
-  })
-  if (name === null) return null
-
-  const folder = await promptText({
-    title: `Where does "${name.trim()}" live?`,
-    hint: remembered ? "enter keeps this folder" : "a folder for this project",
-    initial: remembered || fallbackDir(),
-    validate: (value) => {
-      const trimmed = value.trim()
-      if (!trimmed) return "a folder is required"
-      return vaultProblem(trimmed) || undefined
-    },
-  })
-  if (folder === null) return null
-
-  const resolved = path.resolve(folder.trim())
-  const project = await withSpinner(`Preparing ${name.trim()}`, async () => {
-    const directory = await store.ensureProjectFolder(resolved)
-    return store.upsertProject({ name: name.trim(), folder: directory })
-  })
-  await writeConfig({ ...config, lastProject: { name: project.name, folder: project.folder } })
-  info(`${project.name} → ${project.folder}`)
-  // launchTui clears the screen, so the confirmation has to come after it exits.
-  return launchAndArchive(() => store.launchTui({ directory: project.folder }), project.name, `Watching ${project.name} — sessions save every ${Math.round(store.LIVE_ARCHIVE_INTERVAL / 1000)}s while you work, and again on exit.`)
-}
-
-async function saveFlow() {
-  const index = await store.readIndex()
-  const already = new Map(index.sessions.map((entry) => [entry.sessionID, entry.label]))
-  const rows = await store.recentSessions(RECENT_LIMIT)
-  if (rows.length === 0) {
-    await notify("No sessions found in the opencode database.")
-    return
-  }
-
-  const groups = groupBy(rows, (row) => dayGroup(row.timeUpdated)).map((group) => ({
-    label: group.label,
-    items: group.items.map((row) => ({
-      value: row,
-      title: row.title || row.id,
-      footer: `${folderName(row.directory)} · ${row.messages || 0} msgs`,
-      preview: `${relativeTime(row.timeUpdated)} · ${row.directory || "unknown dir"}${already.has(row.id) ? ` · already saved as "${already.get(row.id)}"` : ""}`,
-    })),
-  }))
-
-  const result = await dialog({
-    title: "Save a session",
-    byline: "",
-    subheading: `${RECENT_LIMIT} most recent · ${already.size} already in the vault`,
-    groups,
-    empty: "No sessions found in the opencode database.",
-    hints: [{ key: "enter", label: "archive" }],
-  })
-  if (result.action !== "select") return
-  const picked = result.value
-
-  const suggestion = already.get(picked.id) || store.slugify(picked.title)
-  const label = await promptText({
-    title: "Name this session so you recognise it later:",
-    hint: "letters, digits, spaces, . - _ only",
-    initial: suggestion,
-    validate: store.validateLabel,
-  })
-  if (label === null) return
-
-  const entry = await withSpinner(`Exporting ${picked.title || picked.id}`, () =>
-    store.saveSession({
-      id: picked.id,
-      label,
-      title: picked.title,
-      directory: picked.directory,
-      messages: picked.messages,
-    }),
-  )
-  info(`Saved "${entry.label}" → ${entry.file} (${formatBytes(entry.bytes)}, ${entry.messages} msgs)`)
-  await notify("Done.")
-}
-
 async function backupFlow() {
   try {
     info("Vacuuming a consistent snapshot of the session database …")
@@ -337,6 +246,59 @@ async function backupFlow() {
     info(`Copy ${source} (plus -wal and -shm) to ${store.DB_DIR} while opencode is closed instead.`)
   }
   await notify("Done.")
+}
+
+async function clearFlow() {
+  const running = await store.opencodeRunning()
+  if (running) {
+    info("Close opencode first — it keeps sessions in memory and would write them back.")
+    await notify("opencode is running.")
+    return
+  }
+
+  let counts
+  try {
+    counts = await store.historyCounts()
+  } catch (error) {
+    info(`Could not read the session database: ${error.message}`)
+    await notify("Nothing was deleted.")
+    return
+  }
+
+  const stats = await store.vaultStats()
+  if (counts.sessions === 0 && stats.sessions === 0) {
+    info("Nothing to clear.")
+    await notify("Nothing to clear.")
+    return
+  }
+
+  info(`opencode  ${counts.sessions} sessions, ${counts.messages} messages`)
+  info(`rewind    ${stats.sessions} archives (${formatBytes(stats.bytes)}), ${stats.snapshots} snapshots`)
+  info("A database snapshot is taken first, so this is reversible.")
+  info("Projects and credentials are kept.")
+
+  const typed = await promptText({
+    title: "Type DELETE to erase it all:",
+    hint: "anything else cancels",
+    initial: "",
+    validate: () => undefined,
+  })
+  if (typed === null || typed.trim().toUpperCase() !== "DELETE") {
+    info("Cancelled. Nothing was deleted.")
+    await notify("Cancelled.")
+    return
+  }
+
+  try {
+    await withSpinner("Snapshotting", () => store.backupDatabase())
+    const before = await store.clearOpencodeHistory()
+    await store.clearVault()
+    info(`Deleted ${before.sessions} sessions and ${stats.sessions} archives.`)
+    await notify("History cleared.")
+  } catch (error) {
+    info(`Clear failed: ${error.message}`)
+    await notify("Clear failed.")
+  }
 }
 
 async function listFlow() {
@@ -489,13 +451,6 @@ async function doctorFlow() {
   if (status.installed && !status.current) {
     problems.push(`the live saving plugin is stale — run rewind plugin install`)
   }
-  if (state.exists) {
-    // Worth calling out loudly: with aliases on one folder only one project can
-    // ever receive sessions, and the others just look broken.
-    for (const names of store.duplicateFolders(await store.readIndex().then((i) => i.projects))) {
-      problems.push(`${names.length} projects share one folder (${names.join(", ")}) — sessions go to one of them; re-add that folder to collapse them`)
-    }
-  }
 
   info("")
   info(
@@ -585,7 +540,7 @@ async function menu() {
       banner: "REWIND",
       byline: BYLINE,
       clear: true,
-      subheading: `${stats.sessions} archived · ${formatBytes(stats.bytes)}${stats.projects ? ` · ${stats.projects} project${stats.projects === 1 ? "" : "s"}` : ""}${stats.snapshots ? ` · ${stats.snapshots} snapshot${stats.snapshots === 1 ? "" : "s"}` : ""}`,
+      subheading: `${stats.sessions} saved · ${formatBytes(stats.bytes)}`,
       filter: false,
       groups: [
         {
@@ -595,33 +550,21 @@ async function menu() {
               value: "load",
               title: "Load a session",
               footer: stats.sessions ? `${stats.sessions} saved` : "nothing saved yet",
-              preview: stats.sessions ? `archives live in ${store.SESSIONS_DIR}` : "save a session to build the vault",
-            },
-            {
-              value: "new",
-              title: "Start new project",
-              footer: setup.remembered ? "last folder remembered" : "name it and pick a folder",
-              preview: setup.remembered
-                ? `enter to reuse ${setup.remembered}`
-                : "sessions from this folder archive themselves when you quit opencode",
-            },
-            {
-              value: "save",
-              title: "Save a session",
-              footer: "archive recent sessions",
-              preview: "exports recent sessions from the opencode database",
             },
             {
               value: "backup",
               title: "Back up session database",
-              footer: "vacuumed snapshot",
-              preview: `writes opencode-<timestamp>.db into ${store.DB_DIR}`,
+              footer: stats.snapshots ? `${stats.snapshots} taken` : "none yet",
+            },
+            {
+              value: "clear",
+              title: "Clear all history",
+              footer: "sessions and archives",
             },
             {
               value: "plain",
-              title: "Start opencode without a session",
-              footer: "default",
-              preview: `plain opencode in ${process.cwd()}`,
+              title: "Start opencode",
+              footer: process.cwd(),
             },
           ],
         },
@@ -635,13 +578,8 @@ async function menu() {
       if (typeof code === "number") return code
       continue
     }
-    if (action === "new") {
-      const code = await newProjectFlow()
-      if (typeof code === "number") return code
-      continue
-    }
-    if (action === "save") {
-      await saveFlow()
+    if (action === "clear") {
+      await clearFlow()
       continue
     }
     if (action === "backup") {
@@ -690,6 +628,8 @@ export async function main() {
       return importByLabel(args)
     case "backup-db":
       return backupFlow()
+    case "clear":
+      return clearFlow()
     case "where":
       await ensureVault({ interactive: false })
       return whereFlow()
@@ -699,7 +639,7 @@ export async function main() {
     case "doctor":
       return doctorFlow()
     default:
-      info(`Unknown action "${action}". Try: rewind history list | save | import | backup-db | where | setup | doctor`)
+      info(`Unknown action "${action}". Try: rewind history list | save | import | backup-db | clear | where | setup | doctor`)
       return 1
   }
 }

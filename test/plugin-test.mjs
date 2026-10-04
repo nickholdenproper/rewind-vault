@@ -49,11 +49,10 @@ const check = async (name, fn) => {
   }
 }
 
-async function project(name = "live", dir = "code/live") {
-  const folder = path.join(root, dir)
-  await fsp.mkdir(folder, { recursive: true })
-  await store.upsertProject({ name, folder })
-  return folder
+async function makeFolder(dir = "code/live") {
+  const made = path.join(root, dir)
+  await fsp.mkdir(made, { recursive: true })
+  return made
 }
 
 await check("the plugin dir is opencode's, not rewind's", () => {
@@ -174,7 +173,7 @@ await check("archiveSessionById archives a session from a registered project", a
   const vault = path.join(root, "byid-vault")
   store.setVault(vault)
   await config.prepareVault(vault)
-  const folder = await project("ById", "code/byid")
+  const folder = await makeFolder("code/byid")
 
   process.env.OPENCODE_BIN = FAKE
   process.env.FAKE_OPENCODE_ROWS = JSON.stringify([
@@ -185,17 +184,21 @@ await check("archiveSessionById archives a session from a registered project", a
   assert.ok(entry, "a registered project folder should archive")
   assert.equal(entry.sessionID, "ses_byid001")
   assert.equal(entry.messages, 6)
-  assert.equal(entry.project, "ById")
+  assert.equal(entry.project, undefined, "nothing is filed under a project any more")
   assert.ok(fs.existsSync(store.entryFile(entry)), `archive missing at ${store.entryFile(entry)}`)
   assert.equal(entry.label, "idle-turn-d001", "the label comes from the title plus the id suffix")
 })
 
-await check("archiveSessionById ignores a session outside every project", async () => {
+await check("archiveSessionById archives a session from a folder it has never seen", async () => {
+  // The old rule was "only if its folder is a registered project". Nothing is
+  // registered any more, because nothing needs to be: a session is kept because
+  // it happened, not because of where.
   process.env.FAKE_OPENCODE_ROWS = JSON.stringify([
     { id: "ses_else001", title: "Elsewhere", directory: foreign(path.join(root, "not-a-project")), messages: 3, timeUpdated: 1_000 },
   ])
   const entry = await store.archiveSessionById("ses_else001", { refresh: 0 })
-  assert.equal(entry, null, "an unregistered folder must not be archived")
+  assert.ok(entry, "a folder nobody registered still archives")
+  assert.equal(entry.sessionID, "ses_else001")
 })
 
 await check("archiveSessionById survives an unknown or empty id", async () => {
@@ -204,9 +207,13 @@ await check("archiveSessionById survives an unknown or empty id", async () => {
   assert.equal(await store.archiveSessionById("ses_nope000", { refresh: 0 }), null)
 })
 
-await check("archiveSessionById refuses a session with no directory", async () => {
+await check("archiveSessionById archives a session with no directory", async () => {
+  // opencode does not always record a directory. Requiring one is what used to
+  // lose these sessions for good.
   process.env.FAKE_OPENCODE_ROWS = JSON.stringify([{ id: "ses_nodir01", title: "No folder", directory: "", messages: 1 }])
-  assert.equal(await store.archiveSessionById("ses_nodir01", { refresh: 0 }), null)
+  const entry = await store.archiveSessionById("ses_nodir01", { refresh: 0 })
+  assert.ok(entry, "a session with no folder still archives")
+  assert.equal(entry.directory, "")
 })
 
 await check("archiveSessionById rewrites a live session instead of freezing it", async () => {
@@ -235,10 +242,11 @@ await check("archiveSessionById rewrites a live session instead of freezing it",
   )
 })
 
-await check("archiveSessionById is a no-op when no project is registered", async () => {
-  const vault = path.join(root, "no-project-vault")
+await check("archiveSessionById returns nothing for a session opencode has not recorded", async () => {
+  const vault = path.join(root, "unknown-vault")
   store.setVault(vault)
   await config.prepareVault(vault)
+  process.env.FAKE_OPENCODE_ROWS = "[]"
   assert.equal(await store.archiveSessionById("ses_byid001", { refresh: 0 }), null)
 })
 
@@ -251,7 +259,7 @@ await check("the worker archives from argv and stays silent", async () => {
 
   await config.writeConfig({ vault })
   store.setVault(vault)
-  await store.upsertProject({ name: "Worker", folder })
+
   process.env.FAKE_OPENCODE_ROWS = JSON.stringify([
     { id: "ses_work001", title: "From the worker", directory: foreign(folder), messages: 2, timeUpdated: 1_000 },
   ])
@@ -277,7 +285,7 @@ await check("the worker saves every turn, not just every five minutes", async ()
   await config.writeConfig({ vault })
   store.setVault(vault)
   await config.prepareVault(vault)
-  await store.upsertProject({ name: "Worker", folder: path.join(root, "code", "worker") })
+
 
   const rows = [{ id: "ses_turn001", title: "Every turn", directory: foreign(path.join(root, "code", "worker")), messages: 5, timeUpdated: 1_000 }]
   const publish = () => { process.env.FAKE_OPENCODE_ROWS = JSON.stringify(rows) }

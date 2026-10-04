@@ -45,7 +45,7 @@ await check("autoArchive throws when the database cannot be read", async () => {
   const vault = path.join(root, "vault")
   store.setVault(vault)
   await config.prepareVault(vault)
-  await store.upsertProject({ name: "Broken", folder: path.join(root, "code", "app") })
+
   await assert.rejects(() => store.autoArchive(), /failed/)
 })
 
@@ -53,7 +53,6 @@ await check("archiveNewSessions reports the failure instead of swallowing it", a
   const result = await store.archiveNewSessions()
   assert.ok(result.error, "a failed database read has to be reported")
   assert.deepEqual(result.saved, [])
-  assert.deepEqual(result.missing, [])
   assert.match(String(result.error.message), /failed/)
 })
 
