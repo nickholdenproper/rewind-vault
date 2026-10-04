@@ -399,7 +399,10 @@ async function armClearWatcher() {
   const entry = path.join(path.dirname(fileURLToPath(import.meta.url)), "bin", "rewind.mjs")
 
   // The watcher's output goes to a file. It has no terminal, and a watcher that
-  // dies quietly looks exactly like a watcher that is still waiting.
+  // dies quietly looks exactly like a watcher that is still waiting. The config
+  // dir is created first: on a fresh install it does not exist yet, and
+  // openSync does not create parents.
+  await fsp.mkdir(configDir(), { recursive: true })
   const logFile = path.join(configDir(), "clear-watcher.log")
   const logFd = fs.openSync(logFile, "a")
   // The watcher must judge by the real process list, so the test/practice override
@@ -418,7 +421,6 @@ async function armClearWatcher() {
   // The watcher gets cancelled by pid, and a bare pid proves nothing: it could be
   // any process that recycled the number. Recording the one actually spawned is
   // what makes `--cancel-watcher` safe to point at a number a human typed.
-  await fsp.mkdir(configDir(), { recursive: true })
   await fsp.writeFile(
     markerPath(),
     `${JSON.stringify({ pid: child.pid, armedAt: Date.now() }, null, 2)}\n`,
@@ -437,6 +439,9 @@ async function armClearWatcher() {
   info("  this session is deleted too, this conversation included")
   info(`  changed your mind: rewind history clear --cancel-watcher ${child.pid}`)
   info("")
+  // Blocks until enter. Without this the menu's next paint clears the screen and
+  // the arming looks like it never happened.
+  await notify("Armed. Closing opencode clears everything.")
   return 0
 }
 
@@ -729,6 +734,10 @@ async function menu() {
     startCatchUp()
 
     const stats = await store.vaultStats()
+    // An armed watcher is invisible otherwise, and "did my clear work?" is the
+    // obvious next question.
+    const record = await readWatcher()
+    const armed = record && (await pidAlive(record.pid)) ? record : null
     const result = await dialog({
       title: "Rewind",
       banner: "REWIND",
@@ -752,8 +761,8 @@ async function menu() {
             },
             {
               value: "clear",
-              title: "Clear all history",
-              footer: "sessions and archives",
+              title: armed ? "Clear all history — armed" : "Clear all history",
+              footer: armed ? `runs when opencode closes · pid ${armed.pid}` : "sessions and archives",
             },
             {
               value: "plain",
