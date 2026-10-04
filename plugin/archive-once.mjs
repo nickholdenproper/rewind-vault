@@ -21,6 +21,11 @@ async function main() {
     return 2
   }
   store.setVault(configuredVault(await readConfig()))
+  // Record the session before archiving it. "Clear all history" has to leave the
+  // session the user is currently in alone, and it is the plugin -- not the
+  // CLI -- that knows which one that is. This runs on every idle, so the answer
+  // is always one turn stale at worst, which is the same session.
+  await store.noteActiveSession(sessionID)
   // refresh: 0 on purpose. The timer needs a rate limit because it polls blind
   // every two minutes and would otherwise re-export a session that barely moved.
   // An idle event is not blind: the session demonstrably changed, so rewriting it

@@ -265,6 +265,7 @@ async function backupFlow() {
 async function clearFlow({ yes = false, wait = false, whenClosed = false } = {}) {
   if (whenClosed) return armClearWatcher()
 
+  let keep = []
   if (wait) {
     // The watcher's own loop. Polling a process list every few seconds costs
     // nothing, and it needs no privileges and no IPC.
@@ -279,15 +280,12 @@ async function clearFlow({ yes = false, wait = false, whenClosed = false } = {})
     // Past this point there is nothing to cancel.
     await fsp.rm(markerPath(), { force: true }).catch(() => {})
   } else {
-    const running = await store.opencodeRunning()
-    if (running) {
-      // Asking the user to close opencode and then run this again is a worse
-      // answer than just doing it: they are holding opencode to type the command
-      // in the first place. Arm the watcher and let them close it whenever they
-      // are done. Arming is the confirmation -- it is cancellable, and it prints
-      // the pid to cancel with.
-      return armClearWatcher()
-    }
+    // Keep the session the user is in. This command runs from inside opencode,
+    // so the one thing that must survive is the conversation doing the running.
+    // Deleting it pulls the floor out from under this process mid-command, which
+    // is how "clear all history" used to achieve nothing at all.
+    const active = await store.activeSessionId()
+    if (active) keep = [active]
   }
 
   let counts
@@ -301,7 +299,8 @@ async function clearFlow({ yes = false, wait = false, whenClosed = false } = {})
   }
 
   const stats = await store.vaultStats()
-  if (counts.sessions === 0 && stats.sessions === 0) {
+  const doomed = Math.max(0, counts.sessions - keep.length)
+  if (doomed === 0 && stats.sessions === 0) {
     info("Nothing to clear.")
     await notify("Nothing to clear.")
     await writeClearLog("nothing to clear")
@@ -310,12 +309,14 @@ async function clearFlow({ yes = false, wait = false, whenClosed = false } = {})
 
   info(`opencode  ${counts.sessions} sessions, ${counts.messages} messages`)
   info(`rewind    ${stats.sessions} archives (${formatBytes(stats.bytes)}), ${stats.snapshots} snapshots`)
-  info("A database snapshot is taken first, so this is reversible.")
+  if (keep.length) {
+    info(`Keeping this session, because you are in it: ${keep[0]}`)
+  }
   info("Projects and credentials are kept.")
 
   if (!yes) {
     const typed = await promptText({
-      title: "Type DELETE to erase it all:",
+      title: keep.length ? "Type DELETE to clear the rest:" : "Type DELETE to erase it all:",
       hint: "anything else cancels",
       initial: "",
       validate: () => undefined,
@@ -328,13 +329,21 @@ async function clearFlow({ yes = false, wait = false, whenClosed = false } = {})
   }
 
   try {
-    await withSpinner("Snapshotting", () => store.backupDatabase())
-    const before = await store.clearOpencodeHistory()
-    await store.clearVault()
-    info(`Deleted ${before.sessions} sessions and ${stats.sessions} archives.`)
-    await notify("History cleared.")
+    // No snapshot. Clearing empties the vault's snapshot directory as well, so
+    // a snapshot taken here was a multi-gigabyte copy deleted seconds later --
+    // slow, and a promise of reversibility that never held.
+    const done = await store.clearOpencodeHistory({ keep })
+    const { removed } = await store.clearVault()
+    info(`Deleted ${done.after} of ${done.before} sessions, and ${removed} archives.`)
+    if (done.kept) info(`Kept ${done.kept} session(s): the one you are in.`)
+    if (!done.compacted) {
+      // Not a failure. The rows are gone; VACUUM just could not take the file
+      // while opencode holds the database open.
+      info("The file shrinks to match once you close opencode.")
+    }
+    await notify(doomed ? `Cleared ${doomed} sessions.` : "History cleared.")
     await writeClearLog(
-      `cleared ${before.sessions} opencode sessions (${before.messages} messages, ${before.events} events) and ${stats.sessions} archives`,
+      `cleared ${doomed} opencode sessions (${counts.messages} messages, ${counts.events} events) and ${removed} archives, kept ${done.kept}`,
     )
   } catch (error) {
     info(`Clear failed: ${error.message}`)

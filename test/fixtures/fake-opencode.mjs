@@ -10,10 +10,21 @@
  * that is what opencode really writes and what the matching in store.mjs has to
  * cope with.
  */
+import fsp from "node:fs/promises"
 import zlib from "node:zlib"
 
 const args = process.argv.slice(2)
 const command = args[0]
+
+/**
+ * Records every statement it is asked to run, so a test can assert on the SQL
+ * that would reach the real database rather than on the source that built it.
+ */
+async function recordSql(sql) {
+  const log = process.env.FAKE_OPENCODE_SQL_LOG
+  if (!log) return
+  await fsp.appendFile(log, `${sql}\n`)
+}
 
 /**
  * Applies a `directory IN (...)` restriction the way SQLite would, so a query
@@ -29,9 +40,27 @@ function applyDirectoryFilter(sql, rows) {
   return rows.filter((row) => wanted.has(row.directory))
 }
 
+/**
+ * Applies an `id = '...'` restriction the way SQLite would, so a lookup by id
+ * against this fixture agrees with the real database.
+ */
+function applyIdFilter(sql, rows) {
+  const match = /\bid\s*=\s*'((?:[^']|'')*)'/i.exec(sql)
+  if (!match) return rows
+  const wanted = match[1].replace(/''/g, "'")
+  return rows.filter((row) => row.id === wanted)
+}
+
 if (command === "db") {
   const sql = args[1] || ""
-  const rows = applyDirectoryFilter(sql, JSON.parse(process.env.FAKE_OPENCODE_ROWS || "[]"))
+  await recordSql(sql)
+  // The session tree gets its own fixture rows: it is the one query whose answer
+  // decides which sessions survive a clear, and it must not be confused with the
+  // counts query that shares the same generic row source.
+  const treeQuery = /FROM\s+session/i.test(sql) && !/COUNT\s*\(/i.test(sql)
+  const rows = treeQuery
+    ? applyIdFilter(sql, JSON.parse(process.env.FAKE_OPENCODE_TREE || "[]"))
+    : applyDirectoryFilter(sql, JSON.parse(process.env.FAKE_OPENCODE_ROWS || "[]"))
   if (!sql || /path\s*$/i.test(sql.trim())) {
     process.stdout.write(`${process.env.FAKE_OPENCODE_DB || ""}\n`)
   } else {
