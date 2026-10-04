@@ -202,6 +202,120 @@ await check("autoArchive exports and records a session from a forward-slash row"
   assert.deepEqual(again.saved, [])
 })
 
+await check("planAutoArchive re-archives a session opencode has touched since the copy", () => {
+  const folder = path.join(root, "code", "app")
+  const projects = [{ id: "app", name: "app", folder }]
+  const row = { id: "ses_live01", title: "Still going", directory: folder, messages: 4, timeUpdated: 2_000 }
+  const plan = store.planAutoArchive(projects, [row], [{ sessionID: "ses_live01", label: "still-going-e01", savedAt: 1_000 }], 10, 0)
+  assert.equal(plan.length, 1, "a session that moved on should be saved again, not left frozen at its first copy")
+  assert.equal(plan[0].refresh, true)
+  assert.equal(plan[0].label, "still-going-e01", "the label must be reused so the refresh overwrites rather than orphans")
+})
+
+await check("planAutoArchive leaves an archive alone inside the refresh window", () => {
+  const folder = path.join(root, "code", "app")
+  const projects = [{ id: "app", name: "app", folder }]
+  const row = { id: "ses_live02", title: "Quiet", directory: folder, messages: 4, timeUpdated: 1_100 }
+  const seen = [{ sessionID: "ses_live02", label: "quiet-e02", savedAt: 1_000 }]
+  assert.deepEqual(store.planAutoArchive(projects, [row], seen, 10, 300_000), [], "recently saved, nothing to do")
+  assert.equal(store.planAutoArchive(projects, [row], seen, 10, 0).length, 1, "same row is stale once the window closes")
+})
+
+await check("a refresh does not eat the per-project budget", () => {
+  const folder = path.join(root, "code", "app")
+  const projects = [{ id: "app", name: "app", folder }]
+  const rows = [
+    { id: "ses_old000", title: "Old", directory: folder, messages: 1, timeUpdated: 5_000 },
+    { id: "ses_new000", title: "New", directory: folder, messages: 1, timeUpdated: 4_000 },
+  ]
+  const seen = [{ sessionID: "ses_old000", label: "old-0000", savedAt: 1_000 }]
+  const plan = store.planAutoArchive(projects, rows, seen, 1, 0)
+  assert.deepEqual(
+    plan.map((item) => item.row.id),
+    ["ses_old000", "ses_new000"],
+    "the refresh is free, so the new session still fits in a budget of one",
+  )
+})
+
+await check("autoArchive rewrites the same file when a live session advances", async () => {
+  const vault = path.join(root, "refresh-vault")
+  store.setVault(vault)
+  await config.prepareVault(vault)
+
+  const folder = path.join(root, "code", "refresh")
+  await fsp.mkdir(folder, { recursive: true })
+  await store.upsertProject({ name: "Refresh", folder })
+
+  process.env.OPENCODE_BIN = FAKE
+  const rows = [{ id: "ses_ref001", title: "Getting long", directory: foreign(folder), messages: 4, timeUpdated: 1_000 }]
+  const publish = () => { process.env.FAKE_OPENCODE_ROWS = JSON.stringify(rows) }
+  publish()
+
+  const first = await store.autoArchive({ refresh: 0 })
+  assert.equal(first.saved.length, 1)
+  assert.equal(first.refreshed.length, 0)
+  const file = path.join(vault, "sessions", "getting-long-f001--ses_ref001.json.gz")
+  assert.ok(fs.existsSync(file))
+
+  assert.deepEqual((await store.autoArchive({ refresh: 0 })).refreshed, [], "nothing changed yet")
+
+  rows[0].timeUpdated = Date.now() + 1_000
+  publish()
+  const second = await store.autoArchive({ refresh: 0 })
+  assert.equal(second.saved.length, 0)
+  assert.equal(second.refreshed.length, 1)
+  const sessions = fs.readdirSync(path.join(vault, "sessions"))
+  assert.equal(sessions.length, 1, `a refresh must overwrite, not accumulate: ${sessions.join(", ")}`)
+})
+
+await check("startLiveArchive fills the vault without waiting for opencode to exit", async () => {
+  const vault = path.join(root, "timer-vault")
+  store.setVault(vault)
+  await config.prepareVault(vault)
+
+  const folder = path.join(root, "code", "timer")
+  await fsp.mkdir(folder, { recursive: true })
+  await store.upsertProject({ name: "Timer", folder })
+
+  process.env.OPENCODE_BIN = FAKE
+  process.env.FAKE_OPENCODE_ROWS = JSON.stringify([
+    { id: "ses_time01", title: "Running now", directory: foreign(folder), messages: 2, timeUpdated: 1_000 },
+  ])
+
+  const problems = []
+  const stop = store.startLiveArchive({ intervalMs: 1000, refresh: 0, onError: (error) => problems.push(error) })
+  try {
+    const file = path.join(vault, "sessions", "running-now-me01--ses_time01.json.gz")
+    const deadline = Date.now() + 20_000
+    while (!fs.existsSync(file) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    assert.ok(
+      fs.existsSync(file),
+      `the vault should fill in on its own, so a hard power-off loses nothing${
+        problems.length ? `; background errors: ${problems.map((item) => item.message).join("; ")}` : ""
+      }`,
+    )
+  } finally {
+    stop()
+  }
+
+  const savedAt = (await store.readIndex()).sessions.find((item) => item.sessionID === "ses_time01").savedAt
+  await new Promise((resolve) => setTimeout(resolve, 2500))
+  const after = (await store.readIndex()).sessions.find((item) => item.sessionID === "ses_time01").savedAt
+  assert.equal(after, savedAt, "stop() should halt the timer once opencode has exited")
+})
+
+await check("startLiveArchive never holds the process open", () => {
+  // A background timer that is not unref'd would keep node running after the TUI
+  // exits, turning every `rewind` invocation into a process that never returns.
+  const text = fs.readFileSync(new URL("../lib/store.mjs", import.meta.url), "utf8")
+  const start = text.indexOf("export function startLiveArchive")
+  assert.ok(start > 0, "startLiveArchive should exist")
+  const body = text.slice(start, text.indexOf("\nexport ", start + 1))
+  assert.ok(/unref\(\)/.test(body), "the interval must be unref'd")
+})
+
 await check("exportSessionTo subscribes to close before awaiting the pipeline", async () => {
   // Deterministic guard. Whether the race actually fires depends on how the
   // platform schedules process exit against the pipeline settling, so the

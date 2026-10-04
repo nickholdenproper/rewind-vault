@@ -84,27 +84,46 @@ your settings:
 ## Projects, and saving without thinking about it
 
 **Start new project** asks for a name and a folder, and from then on rewind
-watches that folder. Sessions you start inside it are archived for you the
-moment you quit opencode — no menu, no remembering to save anything:
+watches that folder. Sessions you start inside it are archived for you as you
+work — no menu, no remembering to save anything.
+
+The vault is brought up to date **while opencode is running**, every two
+minutes, and once more when you quit. That matters more than it sounds: waiting
+for a clean exit means a power cut, a crash or a closed laptop lid loses the
+whole session, because nothing ever gets the chance to run. With the timer in
+place a sudden shutdown costs you at most the last couple of minutes.
+
+An archive is also kept current rather than frozen at the moment you first
+quit. If you carry on working in a session that is already saved, rewind
+rewrites it, so the copy in the vault always matches the session as of the last
+pass — not whatever it looked like hours ago. Rewrites are rate-limited to one
+per session every five minutes, because re-exporting a long session is not free.
+
+When you quit you get a summary of everything that landed:
 
 ```
 Saved 2 new sessions from rewind:
   deploy-the-thing-d001     (14 msgs)
   fix-the-flaky-test-c7f2   (38 msgs)
-Watching rewind — new sessions archive when you quit opencode.
+Updated 1 session from rewind:
+  long-refactor-9ab2        (412 msgs)
 ```
-
-The next time you open the menu it catches up on anything opencode recorded in
-the meantime, so the vault is never more than one run behind. Each project
-contributes at most 10 new sessions per run, so a busy folder cannot quietly
-fill your disk, and archives are grouped under their project on the load screen.
 
 Registering a project is not the only way in. **Save a session** still lists
 the 15 most recent sessions from the database and lets you archive any of them
 by hand, which is the right tool for a folder you have not registered.
 
-If a registered folder is moved or deleted, rewind says so rather than quietly
-matching nothing.
+Each project contributes at most 10 new sessions per pass, so a busy folder
+cannot quietly fill your disk, and archives are grouped under their project on
+the load screen. If a registered folder is moved or deleted, rewind says so
+rather than quietly matching nothing.
+
+Both timers are configurable, if you would rather lose less or save less often:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `REWIND_LIVE_INTERVAL` | `120000` | How often the vault is refreshed while opencode runs, in ms |
+| `REWIND_LIVE_REFRESH` | `300000` | Minimum gap before an already-saved session is rewritten, in ms |
 
 ## Commands
 

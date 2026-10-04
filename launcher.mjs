@@ -199,9 +199,13 @@ async function archiveNew(label, note) {
     info(`Could not save new sessions${label ? ` from ${label}` : ""}: ${result.error.message}`)
     return result
   }
-  if (result.saved.length) {
-    info(`Saved ${result.saved.length} new session${result.saved.length === 1 ? "" : "s"}${label ? ` from ${label}` : ""}:`)
-    for (const entry of result.saved) info(`  ${entry.label}  (${entry.messages || 0} msgs)`)
+  const fresh = result.saved || []
+  const updated = result.refreshed || []
+  if (fresh.length || updated.length) {
+    const total = fresh.length + updated.length
+    info(`Saved ${total} session${total === 1 ? "" : "s"}${label ? ` from ${label}` : ""}:`)
+    for (const entry of fresh) info(`  ${entry.label}  (${entry.messages || 0} msgs)  new`)
+    for (const entry of updated) info(`  ${entry.label}  (${entry.messages || 0} msgs)  updated`)
   }
   if (note) info(note)
   for (const folder of result.missing || []) {
@@ -211,12 +215,25 @@ async function archiveNew(label, note) {
 }
 
 /**
- * Every path that starts opencode goes through here, so the sessions you just
- * worked on are archived the moment you quit rather than on some later run.
+ * Every path that starts opencode goes through here.
+ *
+ * Two layers of saving, because neither alone is enough. The interval keeps the
+ * vault current *while* you work, so losing power costs you a couple of minutes
+ * rather than the whole session -- waiting for a clean exit is not an option
+ * when the machine simply stops. The archive after the child exits is still
+ * there to catch the last few messages and to report what happened.
  */
 async function launchAndArchive(launch, label, note) {
-  const code = await launch()
+  let failure
+  const stop = store.startLiveArchive({ onError: (error) => { failure = failure || error } })
+  let code
+  try {
+    code = await launch()
+  } finally {
+    stop()
+  }
   await archiveNew(label, note)
+  if (failure) info(`A background save failed earlier and was retried: ${failure.message}`)
   return code
 }
 
@@ -253,7 +270,7 @@ async function newProjectFlow() {
   await writeConfig({ ...config, lastProject: { name: project.name, folder: project.folder } })
   info(`${project.name} → ${project.folder}`)
   // launchTui clears the screen, so the confirmation has to come after it exits.
-  return launchAndArchive(() => store.launchTui({ directory: project.folder }), project.name, `Watching ${project.name} — new sessions archive when you quit opencode.`)
+  return launchAndArchive(() => store.launchTui({ directory: project.folder }), project.name, `Watching ${project.name} — sessions save every ${Math.round(store.LIVE_ARCHIVE_INTERVAL / 1000)}s while you work, and again on exit.`)
 }
 
 async function saveFlow() {
