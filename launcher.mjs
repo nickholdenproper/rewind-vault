@@ -13,6 +13,7 @@ import {
   vaultProblem,
   writeConfig,
 } from "./lib/config.mjs"
+import * as plugin from "./lib/plugin.mjs"
 import * as store from "./lib/store.mjs"
 import {
   BYLINE,
@@ -468,6 +469,7 @@ async function doctorFlow() {
   const state = describe(config)
   const version = await store.opencodeVersion()
   const db = await store.dbFile().catch(() => "")
+  const status = await plugin.pluginStatus()
 
   info(`node           ${process.version}`)
   info(`opencode       ${version ? `${store.opencodeBin()} (${version})` : `not found — npm install -g opencode-ai`}`)
@@ -484,13 +486,69 @@ async function doctorFlow() {
   if (!version) problems.push("opencode is not on PATH")
   if (!db) problems.push("opencode's session database was not found")
   if (version && !db) problems.push("opencode runs but cannot reach its database")
+  if (status.installed && !status.current) {
+    problems.push(`the live saving plugin is stale — run rewind plugin install`)
+  }
+
+  info("")
+  info(
+    status.installed && status.current
+      ? `live saving   on — saved the moment a turn ends`
+      : status.installed
+        ? `live saving   stale — run rewind plugin install`
+        : `live saving   timer only (every ${Math.round(store.LIVE_ARCHIVE_INTERVAL / 1000)}s) — run rewind plugin install to save on every turn`,
+  )
+
   if (!version || !db) {
     info("")
     info("Install opencode first, then rewind:")
     info("  npm install -g opencode-ai")
     return 1
   }
-  return 0
+  for (const problem of problems) info(`! ${problem}`)
+  return problems.length ? 1 : 0
+}
+
+async function pluginFlow(args) {
+  const action = args[0] || "status"
+  const status = await plugin.pluginStatus()
+
+  if (action === "install") {
+    const done = await plugin.installPlugin()
+    info("")
+    info(`Installed ${done.file}`)
+    info("opencode loads it automatically at startup. Restart opencode to pick it up.")
+    info("Until then the two-minute timer is still doing the saving.")
+    return 0
+  }
+
+  if (action === "uninstall" || action === "remove") {
+    const done = await plugin.uninstallPlugin()
+    info("")
+    info(done.removed ? `Removed ${done.file}` : `Nothing installed at ${done.file}`)
+    info("Live saving now falls back to the timer in the rewind launcher.")
+    return 0
+  }
+
+  if (action === "status") {
+    info("")
+    if (!status.installed) {
+      info("Live saving plugin   not installed")
+      info("Install it with:      rewind plugin install")
+    } else if (!status.current) {
+      info(`Live saving plugin   installed but stale — it points at ${status.worker}`)
+      info("Refresh it with:      rewind plugin install")
+    } else {
+      info("Live saving plugin   installed")
+      info(`  plugin  ${status.file}`)
+      info(`  worker  ${status.worker}`)
+      info(`  node    ${status.node}`)
+    }
+    return 0
+  }
+
+  info(`Unknown action "${action}". Try: rewind plugin install | uninstall | status`)
+  return 1
 }
 
 async function menu() {
@@ -604,6 +662,9 @@ export async function main() {
     if (maybeSubcommand === "doctor" || maybeSubcommand === "check") {
       await ensureVault({ interactive: false })
       return doctorFlow()
+    }
+    if (maybeSubcommand === "plugin" || maybeSubcommand === "live") {
+      return pluginFlow(rest)
     }
     return launchAndArchive(() => store.passthrough(argv), "")
   }

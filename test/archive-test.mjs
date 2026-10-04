@@ -284,26 +284,32 @@ await check("startLiveArchive fills the vault without waiting for opencode to ex
 
   const problems = []
   const stop = store.startLiveArchive({ intervalMs: 1000, refresh: 0, onError: (error) => problems.push(error) })
+  // Wait on the index entry, not the .gz on disk: exportSessionTo writes the file
+  // before upsertSession records it, so the file can appear while the index is
+  // still being updated. The index is the commit point.
+  const entry = async () => (await store.readIndex()).sessions.find((item) => item.sessionID === "ses_time01")
   try {
-    const file = path.join(vault, "sessions", "running-now-me01--ses_time01.json.gz")
     const deadline = Date.now() + 20_000
-    while (!fs.existsSync(file) && Date.now() < deadline) {
+    while (!(await entry()) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
+    const saved = await entry()
     assert.ok(
-      fs.existsSync(file),
+      saved,
       `the vault should fill in on its own, so a hard power-off loses nothing${
         problems.length ? `; background errors: ${problems.map((item) => item.message).join("; ")}` : ""
       }`,
     )
+    assert.ok(fs.existsSync(store.entryFile(saved)), `archive missing at ${store.entryFile(saved)}`)
+    const savedAt = saved.savedAt
+
+    stop()
+    await new Promise((resolve) => setTimeout(resolve, 2500))
+    const after = await entry()
+    assert.equal(after.savedAt, savedAt, "stop() should halt the timer once opencode has exited")
   } finally {
     stop()
   }
-
-  const savedAt = (await store.readIndex()).sessions.find((item) => item.sessionID === "ses_time01").savedAt
-  await new Promise((resolve) => setTimeout(resolve, 2500))
-  const after = (await store.readIndex()).sessions.find((item) => item.sessionID === "ses_time01").savedAt
-  assert.equal(after, savedAt, "stop() should halt the timer once opencode has exited")
 })
 
 await check("startLiveArchive never holds the process open", () => {

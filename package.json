@@ -29,6 +29,7 @@
   "files": [
     "bin",
     "lib",
+    "plugin",
     "launcher.mjs",
     "README.md",
     "LICENSE"

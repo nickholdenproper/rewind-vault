@@ -87,17 +87,50 @@ your settings:
 watches that folder. Sessions you start inside it are archived for you as you
 work — no menu, no remembering to save anything.
 
-The vault is brought up to date **while opencode is running**, every two
-minutes, and once more when you quit. That matters more than it sounds: waiting
-for a clean exit means a power cut, a crash or a closed laptop lid loses the
-whole session, because nothing ever gets the chance to run. With the timer in
-place a sudden shutdown costs you at most the last couple of minutes.
+### Saving the moment a turn ends
 
-An archive is also kept current rather than frozen at the moment you first
-quit. If you carry on working in a session that is already saved, rewind
-rewrites it, so the copy in the vault always matches the session as of the last
-pass — not whatever it looked like hours ago. Rewrites are rate-limited to one
-per session every five minutes, because re-exporting a long session is not free.
+This is the part that actually protects your work, so it is worth being precise
+about. The obvious design — archive when opencode exits — is the wrong one: a
+power cut, a crash or a closed laptop lid means the child never exits cleanly, so
+the archive step never runs and you come back to an empty vault. Waiting for
+shutdown is waiting for the one event that does not arrive.
+
+rewind saves at the boundary that *does* happen reliably: **the moment a turn
+finishes**. opencode fires `session.idle` at exactly that point, when the
+transcript is durably written and nothing is mid-stream. A turn is atomic, so
+there is no gap to lose.
+
+```sh
+rewind plugin install
+```
+
+That writes a small plugin into `~/.config/opencode/plugins/`, which opencode
+loads automatically at startup. Restart opencode and sessions save themselves.
+
+The plugin is a trigger, not an archiver. On `session.idle` it shells out to a
+Node worker that does the real save with rewind's own code, so the vault format
+and project matching live in exactly one place. Two things follow from that: the
+plugin cannot corrupt an archive even if it misbehaves, and a session started
+with plain `opencode` is saved too, not just one launched through `rewind`.
+
+Because it runs inside opencode's own process, the plugin is written to be
+invisible: it never prints to the terminal, never throws (an exception here
+would surface as an opencode crash), and collapses bursts of events so
+subagent chatter does not spawn a process per message.
+
+### The timer backstop
+
+rewind also refreshes the vault every two minutes while opencode runs, and once
+more on exit. That is not redundant. It covers a session that ends without a
+clean `session.idle` — a crash, a `kill`, an unplugged cable — and it keeps
+working if the plugin is not installed. If the plugin is present, the timer
+usually finds nothing to do.
+
+An archive is also kept current rather than frozen at the moment you first quit.
+If you carry on working in a session that is already saved, rewind rewrites it,
+so the copy in the vault always matches the session as of the last save. Rewrites
+are rate-limited to one per session every five minutes, because re-exporting a
+long session is not free.
 
 When you quit you get a summary of everything that landed:
 
@@ -130,6 +163,9 @@ Both timers are configurable, if you would rather lose less or save less often:
 | Command | What it does |
 |---|---|
 | `rewind` | The menu. `esc` drops you into plain opencode. |
+| `rewind plugin install` | Turn on save-on-turn-end. Restart opencode after. |
+| `rewind plugin status` | Whether live saving is on, and where it points. |
+| `rewind plugin uninstall` | Remove it; saving falls back to the timer. |
 | `rewind where` | Print the vault path, config path and archive count. |
 | `rewind setup [folder]` | Set or change the vault location. |
 | `rewind doctor` | Check node, opencode, the database and the vault. |

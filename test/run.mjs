@@ -9,6 +9,7 @@ const suites = [
   "first-run-test.mjs",
   "archive-test.mjs",
   "archive-failure-test.mjs",
+  "plugin-test.mjs",
   "ui-test.mjs",
   "align-check.mjs",
 ]
