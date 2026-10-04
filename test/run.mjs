@@ -4,7 +4,14 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
-const suites = ["config-test.mjs", "first-run-test.mjs", "ui-test.mjs", "align-check.mjs"]
+const suites = [
+  "config-test.mjs",
+  "first-run-test.mjs",
+  "archive-test.mjs",
+  "archive-failure-test.mjs",
+  "ui-test.mjs",
+  "align-check.mjs",
+]
 
 for (const suite of suites) {
   process.stdout.write(`\n== ${suite} ==\n`)

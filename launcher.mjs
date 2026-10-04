@@ -59,7 +59,7 @@ async function ensureVault({ interactive = true } = {}) {
   const vault = await prepareVault(chosen)
   store.setVault(vault)
   await writeConfig({ ...config, vault })
-  return { vault, asked: true }
+  return { vault, asked: true, remembered: config.lastProject?.folder }
 }
 
 function groupBy(items, key) {
@@ -82,8 +82,13 @@ function totalBytes(entries) {
   return entries.reduce((sum, entry) => sum + (Number(entry.bytes) || 0), 0)
 }
 
+/**
+ * Auto-archived sessions carry the project they belong to, so they group under
+ * it. Anything saved by hand has no project, and falls back to the day it was
+ * archived, which is how the load screen has always grouped them.
+ */
 function savedGroups(entries) {
-  return groupBy(entries, (entry) => dayGroup(entry.savedAt)).map((group) => ({
+  return groupBy(entries, (entry) => entry.project || dayGroup(entry.savedAt)).map((group) => ({
     label: group.label,
     items: group.items.map((entry) => ({
       value: entry,
@@ -178,8 +183,77 @@ async function loadFlow() {
 
     const imported = await withSpinner(`Restoring ${picked.label} (${picked.sessionID})`, () => store.importArchive(picked, directory))
     info(imported || "imported")
-    return store.launchTui({ directory, sessionID: picked.sessionID })
+    return launchAndArchive(() => store.launchTui({ directory, sessionID: picked.sessionID }), "the restored session")
   }
+}
+
+/**
+ * Archives anything new that belongs to a registered project and says what it
+ * caught. Failures are printed rather than swallowed: a run that silently saved
+ * nothing is indistinguishable from a run with nothing to save.
+ */
+async function archiveNew(label, note) {
+  const result = await store.archiveNewSessions()
+  info("")
+  if (result.error) {
+    info(`Could not save new sessions${label ? ` from ${label}` : ""}: ${result.error.message}`)
+    return result
+  }
+  if (result.saved.length) {
+    info(`Saved ${result.saved.length} new session${result.saved.length === 1 ? "" : "s"}${label ? ` from ${label}` : ""}:`)
+    for (const entry of result.saved) info(`  ${entry.label}  (${entry.messages || 0} msgs)`)
+  }
+  if (note) info(note)
+  for (const folder of result.missing || []) {
+    info(`Project folder is gone, so nothing new will save from it: ${folder}`)
+  }
+  return result
+}
+
+/**
+ * Every path that starts opencode goes through here, so the sessions you just
+ * worked on are archived the moment you quit rather than on some later run.
+ */
+async function launchAndArchive(launch, label, note) {
+  const code = await launch()
+  await archiveNew(label, note)
+  return code
+}
+
+async function newProjectFlow() {
+  const config = await readConfig()
+  const remembered = config.lastProject?.folder
+  const suggestion = remembered ? path.basename(path.resolve(remembered)) : ""
+
+  const name = await promptText({
+    title: "Name this project:",
+    hint: "letters, digits, spaces, . - _ only",
+    initial: suggestion,
+    validate: store.validateLabel,
+  })
+  if (name === null) return null
+
+  const folder = await promptText({
+    title: `Where does "${name.trim()}" live?`,
+    hint: remembered ? "enter keeps this folder" : "a folder for this project",
+    initial: remembered || fallbackDir(),
+    validate: (value) => {
+      const trimmed = value.trim()
+      if (!trimmed) return "a folder is required"
+      return vaultProblem(trimmed) || undefined
+    },
+  })
+  if (folder === null) return null
+
+  const resolved = path.resolve(folder.trim())
+  const project = await withSpinner(`Preparing ${name.trim()}`, async () => {
+    const directory = await store.ensureProjectFolder(resolved)
+    return store.upsertProject({ name: name.trim(), folder: directory })
+  })
+  await writeConfig({ ...config, lastProject: { name: project.name, folder: project.folder } })
+  info(`${project.name} → ${project.folder}`)
+  // launchTui clears the screen, so the confirmation has to come after it exits.
+  return launchAndArchive(() => store.launchTui({ directory: project.folder }), project.name, `Watching ${project.name} — new sessions archive when you quit opencode.`)
 }
 
 async function saveFlow() {
@@ -416,16 +490,20 @@ async function menu() {
   }
 
   const setup = await ensureVault()
-  if (setup.vault === undefined) return store.launchTui({})
+  if (setup.vault === undefined) return launchAndArchive(() => store.launchTui({}), "")
 
   for (;;) {
+    // Catches anything opencode recorded outside this window, so the vault is
+    // never more than one run behind.
+    await archiveNew()
+
     const stats = await store.vaultStats()
     const result = await dialog({
       title: "Rewind",
       banner: "REWIND",
       byline: BYLINE,
       clear: true,
-      subheading: `${stats.sessions} archived · ${formatBytes(stats.bytes)}${stats.snapshots ? ` · ${stats.snapshots} snapshot${stats.snapshots === 1 ? "" : "s"}` : ""}`,
+      subheading: `${stats.sessions} archived · ${formatBytes(stats.bytes)}${stats.projects ? ` · ${stats.projects} project${stats.projects === 1 ? "" : "s"}` : ""}${stats.snapshots ? ` · ${stats.snapshots} snapshot${stats.snapshots === 1 ? "" : "s"}` : ""}`,
       filter: false,
       groups: [
         {
@@ -436,6 +514,14 @@ async function menu() {
               title: "Load a session",
               footer: stats.sessions ? `${stats.sessions} saved` : "nothing saved yet",
               preview: stats.sessions ? `archives live in ${store.SESSIONS_DIR}` : "save a session to build the vault",
+            },
+            {
+              value: "new",
+              title: "Start new project",
+              footer: setup.remembered ? "last folder remembered" : "name it and pick a folder",
+              preview: setup.remembered
+                ? `enter to reuse ${setup.remembered}`
+                : "sessions from this folder archive themselves when you quit opencode",
             },
             {
               value: "save",
@@ -467,6 +553,11 @@ async function menu() {
       if (typeof code === "number") return code
       continue
     }
+    if (action === "new") {
+      const code = await newProjectFlow()
+      if (typeof code === "number") return code
+      continue
+    }
     if (action === "save") {
       await saveFlow()
       continue
@@ -475,7 +566,7 @@ async function menu() {
       await backupFlow()
       continue
     }
-    return store.launchTui({})
+    return launchAndArchive(() => store.launchTui({}), "")
   }
 }
 
@@ -497,7 +588,7 @@ export async function main() {
       await ensureVault({ interactive: false })
       return doctorFlow()
     }
-    return store.passthrough(argv)
+    return launchAndArchive(() => store.passthrough(argv), "")
   }
 
   const [action, ...args] = rest
