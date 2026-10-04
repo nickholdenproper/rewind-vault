@@ -21,7 +21,13 @@ async function main() {
     return 2
   }
   store.setVault(configuredVault(await readConfig()))
-  await store.archiveSessionById(sessionID, { refresh: store.LIVE_ARCHIVE_REFRESH })
+  // refresh: 0 on purpose. The timer needs a rate limit because it polls blind
+  // every two minutes and would otherwise re-export a session that barely moved.
+  // An idle event is not blind: the session demonstrably changed, so rewriting it
+  // is the whole point. With 0, planAutoArchive still skips anything whose
+  // timeUpdated has not moved, so a repeated idle for an unchanged session costs
+  // a query and nothing more.
+  await store.archiveSessionById(sessionID, { refresh: 0 })
   return 0
 }
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { execFile } from "node:child_process"
 import fs from "node:fs"
 import fsp from "node:fs/promises"
 import os from "node:os"
@@ -255,14 +256,6 @@ await check("the worker archives from argv and stays silent", async () => {
     { id: "ses_work001", title: "From the worker", directory: foreign(folder), messages: 2, timeUpdated: 1_000 },
   ])
 
-  const { execFile } = await import("node:child_process")
-  const run = (args) =>
-    new Promise((resolve) => {
-      execFile(process.execPath, [plugin.workerPath(), ...args], { env: process.env }, (error, stdout, stderr) => {
-        resolve({ code: error?.code ?? 0, stdout, stderr })
-      })
-    })
-
   const good = await run(["ses_work001"])
   assert.equal(good.code, 0)
   assert.equal(good.stdout, "", "the worker must not print while opencode owns the terminal")
@@ -278,10 +271,51 @@ await check("the worker archives from argv and stays silent", async () => {
   assert.equal(unknown.stdout, "")
 })
 
+await check("the worker saves every turn, not just every five minutes", async () => {
+  const vault = path.join(root, "turn-vault")
+  await fsp.rm(vault, { recursive: true, force: true })
+  await config.writeConfig({ vault })
+  store.setVault(vault)
+  await config.prepareVault(vault)
+  await store.upsertProject({ name: "Worker", folder: path.join(root, "code", "worker") })
+
+  const rows = [{ id: "ses_turn001", title: "Every turn", directory: foreign(path.join(root, "code", "worker")), messages: 5, timeUpdated: 1_000 }]
+  const publish = () => { process.env.FAKE_OPENCODE_ROWS = JSON.stringify(rows) }
+  publish()
+
+  // The five minute window belongs to the timer, which polls blind. An idle
+  // event says the session changed, so the worker must not defer the save.
+  process.env.REWIND_LIVE_REFRESH = "300000"
+  assert.equal((await run(["ses_turn001"])).code, 0)
+  assert.equal((await store.readIndex()).sessions[0].messages, 5)
+
+  rows[0].timeUpdated = Date.now()
+  rows[0].messages = 31
+  publish()
+  assert.equal((await run(["ses_turn001"])).code, 0)
+  const saved = (await store.readIndex()).sessions[0]
+  assert.equal(saved.messages, 31, "a turn two minutes later still gets saved")
+
+  await run(["ses_turn001"])
+  assert.equal((await store.readIndex()).sessions[0].savedAt, saved.savedAt, "an unchanged session is still a no-op")
+})
+
 await fsp.rm(root, { recursive: true, force: true })
 
 process.stdout.write(`\n${passed + failed} plugin checks passed${failed ? `, ${failed} FAILED` : ""}\n`)
 process.exitCode = failed ? 1 : 0
+
+/**
+ * Runs the worker the way the plugin does: a detached Node process that has to
+ * report failure on stderr and say nothing on stdout.
+ */
+function run(args) {
+  return new Promise((resolve) => {
+    execFile(process.execPath, [plugin.workerPath(), ...args], { env: process.env }, (error, stdout, stderr) => {
+      resolve({ code: error?.code ?? 0, stdout, stderr })
+    })
+  })
+}
 
 /**
  * Loads the rendered plugin the way opencode does -- as a module exporting a
