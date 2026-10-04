@@ -6,10 +6,10 @@ that looks like opencode's own TUI.
 `rewind` gives you one screen for the four things you actually want to do with
 AI session history:
 
+- **Start new project** — name a folder and rewind starts watching it.
 - **Save a session** — export it to a plain `.json.gz` you own.
 - **Load a session** — import it back and resume it exactly where it stopped.
 - **Back up session database** — `VACUUM INTO` a consistent snapshot.
-- **Start opencode without a session** — the plain TUI, one keypress away.
 
 It has **no dependencies** and talks to your existing opencode install through
 its own CLI (`opencode export`, `opencode import`, `opencode db`).
@@ -68,7 +68,7 @@ The vault is just a folder on your disk:
 
 ```
 ~/.rewind/
-  index.json                    one row per saved session
+  index.json                    one row per saved session and per project
   sessions/<label>--<id>.json.gz one gzip file per session
   db/opencode-<timestamp>.db     optional database snapshots
 ```
@@ -80,6 +80,31 @@ your settings:
 |---|---|
 | Linux / macOS | `~/.config/rewind/config.json` (or `$XDG_CONFIG_HOME`) |
 | Windows | `%USERPROFILE%\.config\rewind\config.json` |
+
+## Projects, and saving without thinking about it
+
+**Start new project** asks for a name and a folder, and from then on rewind
+watches that folder. Sessions you start inside it are archived for you the
+moment you quit opencode — no menu, no remembering to save anything:
+
+```
+Saved 2 new sessions from rewind:
+  deploy-the-thing-d001     (14 msgs)
+  fix-the-flaky-test-c7f2   (38 msgs)
+Watching rewind — new sessions archive when you quit opencode.
+```
+
+The next time you open the menu it catches up on anything opencode recorded in
+the meantime, so the vault is never more than one run behind. Each project
+contributes at most 10 new sessions per run, so a busy folder cannot quietly
+fill your disk, and archives are grouped under their project on the load screen.
+
+Registering a project is not the only way in. **Save a session** still lists
+the 15 most recent sessions from the database and lets you archive any of them
+by hand, which is the right tool for a folder you have not registered.
+
+If a registered folder is moved or deleted, rewind says so rather than quietly
+matching nothing.
 
 ## Commands
 
@@ -149,13 +174,15 @@ that is opencode's format, not something rewind can change.
 ## Development
 
 ```sh
-npm test          # config, ui and layout suites, no network, no real vault
+npm test          # config, first-run, archive, ui and layout suites
 node test/preview-menu.mjs   # render the splash with colour
 node test/preview-real.mjs   # render the load list against your real vault
 ```
 
 The tests drive a fake TTY and set `REWIND_HOME` / `REWIND_CONFIG_DIR` to a
-temp folder, so they never touch your own vault.
+temp folder, so they never touch your own vault. The archive suites point
+`OPENCODE_BIN` at `test/fixtures/fake-opencode.mjs`, which answers `db` and
+`export` and reproduces SQLite's byte-exact `IN (...)` matching.
 
 ## License
 
