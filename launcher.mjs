@@ -1,8 +1,12 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process"
 import fs from "node:fs"
+import fsp from "node:fs/promises"
 import path from "node:path"
 import process from "node:process"
+import { fileURLToPath } from "node:url"
 import {
+  configDir,
   configuredVault,
   configPath,
   defaultVault,
@@ -248,12 +252,42 @@ async function backupFlow() {
   await notify("Done.")
 }
 
-async function clearFlow() {
-  const running = await store.opencodeRunning()
-  if (running) {
-    info("Close opencode first — it keeps sessions in memory and would write them back.")
-    await notify("opencode is running.")
-    return
+/**
+ * Wipes every opencode session and every rewind archive.
+ *
+ * The awkward part of this command is that it can only run when opencode is
+ * closed, and opencode is usually the thing you are using when you reach for it.
+ * So there are two ways out: `--when-closed` hands the job to a detached watcher
+ * that fires the moment opencode exits, and `--wait` is that watcher. `--yes`
+ * drops the typed confirmation, which only makes sense for the watcher, since
+ * nothing can type into it.
+ */
+async function clearFlow({ yes = false, wait = false, whenClosed = false } = {}) {
+  if (whenClosed) return armClearWatcher()
+
+  if (wait) {
+    // The watcher's own loop. Polling a process list every few seconds costs
+    // nothing, and it needs no privileges and no IPC.
+    process.stdout.write("rewind: waiting for opencode to exit\n")
+    for (;;) {
+      if (!(await store.opencodeRunning())) break
+      await new Promise((resolve) => setTimeout(resolve, 3000))
+    }
+    // opencode's last writes hit the disk as it exits; give the file handles a
+    // moment to go away before opening the database for deletion.
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    // Past this point there is nothing to cancel.
+    await fsp.rm(markerPath(), { force: true }).catch(() => {})
+  } else {
+    const running = await store.opencodeRunning()
+    if (running) {
+      // Asking the user to close opencode and then run this again is a worse
+      // answer than just doing it: they are holding opencode to type the command
+      // in the first place. Arm the watcher and let them close it whenever they
+      // are done. Arming is the confirmation -- it is cancellable, and it prints
+      // the pid to cancel with.
+      return armClearWatcher()
+    }
   }
 
   let counts
@@ -262,6 +296,7 @@ async function clearFlow() {
   } catch (error) {
     info(`Could not read the session database: ${error.message}`)
     await notify("Nothing was deleted.")
+    await writeClearLog(`failed: could not read the session database: ${error.message}`)
     return
   }
 
@@ -269,6 +304,7 @@ async function clearFlow() {
   if (counts.sessions === 0 && stats.sessions === 0) {
     info("Nothing to clear.")
     await notify("Nothing to clear.")
+    await writeClearLog("nothing to clear")
     return
   }
 
@@ -277,16 +313,18 @@ async function clearFlow() {
   info("A database snapshot is taken first, so this is reversible.")
   info("Projects and credentials are kept.")
 
-  const typed = await promptText({
-    title: "Type DELETE to erase it all:",
-    hint: "anything else cancels",
-    initial: "",
-    validate: () => undefined,
-  })
-  if (typed === null || typed.trim().toUpperCase() !== "DELETE") {
-    info("Cancelled. Nothing was deleted.")
-    await notify("Cancelled.")
-    return
+  if (!yes) {
+    const typed = await promptText({
+      title: "Type DELETE to erase it all:",
+      hint: "anything else cancels",
+      initial: "",
+      validate: () => undefined,
+    })
+    if (typed === null || typed.trim().toUpperCase() !== "DELETE") {
+      info("Cancelled. Nothing was deleted.")
+      await notify("Cancelled.")
+      return
+    }
   }
 
   try {
@@ -295,9 +333,145 @@ async function clearFlow() {
     await store.clearVault()
     info(`Deleted ${before.sessions} sessions and ${stats.sessions} archives.`)
     await notify("History cleared.")
+    await writeClearLog(
+      `cleared ${before.sessions} opencode sessions (${before.messages} messages, ${before.events} events) and ${stats.sessions} archives`,
+    )
   } catch (error) {
     info(`Clear failed: ${error.message}`)
     await notify("Clear failed.")
+    await writeClearLog(`failed: ${error.message}`)
+  }
+}
+
+/**
+ * A record of what the watcher did, since it runs with no terminal to print to.
+ * Beside the config rather than in the vault, because the vault is what it wipes.
+ */
+async function writeClearLog(message) {
+  const line = `${new Date().toISOString()}  ${message}\n`
+  await fsp.appendFile(path.join(configDir(), "last-clear.log"), line, "utf8").catch(() => {})
+  if (!process.stdout.isTTY) process.stdout.write(`rewind: ${message}\n`)
+}
+
+const markerPath = () => path.join(configDir(), "clear-watcher.json")
+
+async function readWatcher() {
+  try {
+    return JSON.parse(await fsp.readFile(markerPath(), "utf8"))
+  } catch {
+    return null
+  }
+}
+
+const pidAlive = (pid) =>
+  new Promise((resolve) => {
+    try {
+      process.kill(pid, 0)
+      resolve(true)
+    } catch (error) {
+      // EPERM means it is running and belongs to somebody else, which is alive.
+      resolve(error.code === "EPERM")
+    }
+  })
+
+/**
+ * Hands the clear to a detached process that outlives this one.
+ *
+ * Detached with its own process group and no inherited streams, so closing
+ * opencode -- the very thing that triggers the clear -- cannot take the watcher
+ * down with it, and the watcher cannot hold a console open on the way out.
+ *
+ * The watcher runs confirmed. It has no terminal to type into, so leaving it
+ * unconfirmed would mean it silently does nothing, and arming is deliberate
+ * enough on its own: it prints what will happen and the pid to cancel with.
+ */
+async function armClearWatcher() {
+  const armed = await readWatcher()
+  if (armed && (await pidAlive(armed.pid))) {
+    info(`A clear watcher is already armed (pid ${armed.pid}).`)
+    info(`Stop it with: rewind history clear --cancel-watcher ${armed.pid}`)
+    return 1
+  }
+
+  // bin/rewind.mjs is a sibling of this module, and it is the entry point:
+  // launcher.mjs only exports main(), so spawning this file would start a
+  // process that does nothing at all.
+  const entry = path.join(path.dirname(fileURLToPath(import.meta.url)), "bin", "rewind.mjs")
+
+  // The watcher's output goes to a file. It has no terminal, and a watcher that
+  // dies quietly looks exactly like a watcher that is still waiting.
+  const logFile = path.join(configDir(), "clear-watcher.log")
+  const logFd = fs.openSync(logFile, "a")
+  // The watcher must judge by the real process list, so the test/practice override
+  // is stripped: a forced "running" here would leave it waiting forever.
+  const childEnv = { ...process.env }
+  delete childEnv.REWIND_ASSUME_OPENCODE_RUNNING
+  const child = spawn(process.execPath, [entry, "history", "clear", "--wait", "--yes"], {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    windowsHide: true,
+    env: childEnv,
+  })
+  fs.closeSync(logFd)
+  child.unref()
+
+  // The watcher gets cancelled by pid, and a bare pid proves nothing: it could be
+  // any process that recycled the number. Recording the one actually spawned is
+  // what makes `--cancel-watcher` safe to point at a number a human typed.
+  await fsp.mkdir(configDir(), { recursive: true })
+  await fsp.writeFile(
+    markerPath(),
+    `${JSON.stringify({ pid: child.pid, armedAt: Date.now() }, null, 2)}\n`,
+  )
+
+  info("")
+  info("opencode is open, so this is armed to run the moment you close it.")
+  info("No second command to remember.")
+  info("")
+  info("  every opencode session deleted")
+  info("  every rewind archive deleted")
+  info("  projects and credentials kept")
+  info("  a snapshot is written first, so it is reversible")
+  info("")
+  info(`  watcher pid ${child.pid}`)
+  info("  this session is deleted too, this conversation included")
+  info(`  changed your mind: rewind history clear --cancel-watcher ${child.pid}`)
+  info("")
+  return 0
+}
+
+/**
+ * Stops an armed watcher, for when arming it was the wrong call.
+ *
+ * Only ever kills a pid present in the watcher record, so a mistyped number
+ * cannot take down an unrelated process.
+ */
+async function cancelWatcher(pid) {
+  const id = Number(pid)
+  if (!Number.isInteger(id) || id <= 0) {
+    info("usage: rewind history clear --cancel-watcher <pid>")
+    return 1
+  }
+
+  const watcher = await readWatcher()
+  if (!watcher || watcher.pid !== id) {
+    info(`No clear watcher with pid ${id} is armed, so nothing was stopped.`)
+    return 1
+  }
+  if (!(await pidAlive(id))) {
+    await fsp.rm(markerPath(), { force: true })
+    info(`Watcher ${id} had already exited. Nothing will be deleted.`)
+    return 0
+  }
+
+  try {
+    process.kill(id)
+    await fsp.rm(markerPath(), { force: true })
+    info(`Stopped watcher ${id}. Nothing will be deleted.`)
+    return 0
+  } catch (error) {
+    info(`Could not stop ${id}: ${error.message}`)
+    return 1
   }
 }
 
@@ -648,8 +822,15 @@ export async function main() {
       return importByLabel(args)
     case "backup-db":
       return backupFlow()
-    case "clear":
-      return clearFlow()
+    case "clear": {
+      const cancel = args.indexOf("--cancel-watcher")
+      if (cancel >= 0) return cancelWatcher(args[cancel + 1])
+      return clearFlow({
+        yes: args.includes("--yes"),
+        whenClosed: args.includes("--when-closed"),
+        wait: args.includes("--wait"),
+      })
+    }
     case "where":
       await ensureVault({ interactive: false })
       return whereFlow()
