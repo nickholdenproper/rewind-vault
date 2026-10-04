@@ -1,0 +1,44 @@
+{
+  "name": "rewind-vault",
+  "version": "0.1.0",
+  "description": "Archive, restore and back up opencode sessions from a menu that looks like opencode's own TUI",
+  "keywords": [
+    "opencode",
+    "sessions",
+    "backup",
+    "archive",
+    "restore",
+    "cli",
+    "tui"
+  ],
+  "homepage": "https://github.com/nickholdenproper/rewind-vault#readme",
+  "bugs": {
+    "url": "https://github.com/nickholdenproper/rewind-vault/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nickholdenproper/rewind-vault.git"
+  },
+  "license": "MIT",
+  "author": "Hindham",
+  "type": "module",
+  "bin": {
+    "rewind": "bin/rewind.mjs",
+    "oc": "bin/rewind.mjs"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "launcher.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node test/run.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
