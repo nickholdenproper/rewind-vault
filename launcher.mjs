@@ -529,10 +529,30 @@ async function menu() {
   const setup = await ensureVault()
   if (setup.vault === undefined) return launchAndArchive(() => store.launchTui({}), "")
 
+  // Catches anything opencode recorded outside this window, so the vault is
+  // never more than one run behind.
+  //
+  // In the background, and deliberately not awaited. The first run against a
+  // database that already holds hundreds of sessions has all of them to export,
+  // and one export is seconds for a long session -- enough that awaiting it
+  // before the first paint leaves `rewind` looking like it failed to start. The
+  // catch-up is silent because anything printed here would land on top of the
+  // menu; the summary is printed by launchAndArchive when a real session ends,
+  // and the timer picks up whatever is left.
+  let catchingUp = false
+  const startCatchUp = () => {
+    if (catchingUp) return
+    catchingUp = true
+    store
+      .archiveNewSessions()
+      .catch(() => {})
+      .finally(() => {
+        catchingUp = false
+      })
+  }
+
   for (;;) {
-    // Catches anything opencode recorded outside this window, so the vault is
-    // never more than one run behind.
-    await archiveNew()
+    startCatchUp()
 
     const stats = await store.vaultStats()
     const result = await dialog({
@@ -540,7 +560,7 @@ async function menu() {
       banner: "REWIND",
       byline: BYLINE,
       clear: true,
-      subheading: `${stats.sessions} saved · ${formatBytes(stats.bytes)}`,
+      subheading: `${stats.sessions} saved · ${formatBytes(stats.bytes)}${catchingUp ? " · saving…" : ""}`,
       filter: false,
       groups: [
         {

@@ -49,6 +49,13 @@ if (command === "export") {
   }
   const rows = JSON.parse(process.env.FAKE_OPENCODE_ROWS || "[]")
   const row = rows.find((item) => item.id === id) || { id, title: id }
+  // Real exports of a long session take seconds. Tests use this to prove the menu
+  // does not sit behind the archive pass before it paints.
+  const slow = Number(process.env.FAKE_OPENCODE_EXPORT_MS || 0)
+  if (slow > 0) {
+    const until = Date.now() + slow
+    while (Date.now() < until) {}
+  }
   process.stdout.write(zlib.gzipSync(Buffer.from(JSON.stringify({ session: row, messages: [] }))))
   process.exit(0)
 }

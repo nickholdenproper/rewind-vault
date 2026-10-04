@@ -122,6 +122,46 @@ await check("the second run goes straight to the menu", async () => {
   await running
 })
 
+await check("the menu paints without waiting for the catch-up to finish", async () => {
+  // A database that already holds hundreds of sessions has all of them to
+  // export, and a long session takes seconds. Awaiting that before the first
+  // paint leaves `rewind` looking like it failed to start, which is exactly
+  // what happened. 300ms per export x 5 sessions is 1.5s of work: the menu has
+  // to be on screen well before that is over.
+  process.env.FAKE_OPENCODE_ROWS = JSON.stringify(
+    Array.from({ length: 5 }, (_, i) => ({
+      id: `ses_slow${i}00`,
+      title: `Slow ${i}`,
+      directory: "",
+      messages: 4000,
+    })),
+  )
+  process.env.FAKE_OPENCODE_EXPORT_MS = "300"
+
+  const started = Date.now()
+  const running = run([])
+  try {
+    await until("Clear all history", 1200)
+    const elapsed = Date.now() - started
+    assert.ok(elapsed < 1200, `menu took ${elapsed}ms to appear; the archive pass is blocking the paint`)
+  } finally {
+    await keys([ESC])
+    await running
+    delete process.env.FAKE_OPENCODE_EXPORT_MS
+    process.env.FAKE_OPENCODE_ROWS = "[]"
+  }
+
+  // The work still happens, just off the critical path.
+  const deadline = Date.now() + 20000
+  while (Date.now() < deadline) {
+    const index = JSON.parse(await fsp.readFile(path.join(home, ".rewind", "index.json"), "utf8"))
+    if (index.sessions.length >= 5) break
+    await delay(50)
+  }
+  const index = JSON.parse(await fsp.readFile(path.join(home, ".rewind", "index.json"), "utf8"))
+  assert.equal(index.sessions.length, 5, "the catch-up archives everything, it just does not block the menu")
+})
+
 await check("rewind setup <folder> moves the vault and creates it", async () => {
   const typed = path.join(root, "typed vault")
   await fsp.mkdir(root, { recursive: true })
