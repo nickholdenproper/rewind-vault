@@ -42,6 +42,11 @@ if (command === "db") {
 
 if (command === "export") {
   const id = args[1]
+  if (process.env.FAKE_OPENCODE_SILENT === "1") {
+    // Exits without writing anything, so `close` arrives before the stdout pipe
+    // finishes draining. That is the race exportSessionTo has to survive.
+    process.exit(0)
+  }
   const rows = JSON.parse(process.env.FAKE_OPENCODE_ROWS || "[]")
   const row = rows.find((item) => item.id === id) || { id, title: id }
   process.stdout.write(zlib.gzipSync(Buffer.from(JSON.stringify({ session: row, messages: [] }))))

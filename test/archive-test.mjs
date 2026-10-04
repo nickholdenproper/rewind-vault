@@ -202,6 +202,47 @@ await check("autoArchive exports and records a session from a forward-slash row"
   assert.deepEqual(again.saved, [])
 })
 
+await check("exportSessionTo subscribes to close before awaiting the pipeline", async () => {
+  // Deterministic guard. Whether the race actually fires depends on how the
+  // platform schedules process exit against the pipeline settling, so the
+  // timing test below can pass on a slow-spawn platform. The ordering is the
+  // actual invariant: a `close` listener attached after the await is waiting on
+  // an event that may already have happened.
+  const text = await fsp.readFile(new URL("../lib/store.mjs", import.meta.url), "utf8")
+  const start = text.indexOf("export async function exportSessionTo")
+  assert.ok(start > 0, "exportSessionTo should exist")
+  const body = text.slice(start, text.indexOf("\nexport ", start + 1))
+  const subscribed = body.search(/child\.(on|once)\("close"/)
+  const awaited = body.indexOf("await pipeline(")
+  assert.ok(subscribed > 0, "exportSessionTo should listen for close")
+  assert.ok(awaited > 0, "exportSessionTo should await the pipeline")
+  assert.ok(
+    subscribed < awaited,
+    "the close listener must be attached before the pipeline is awaited, or a fast-exiting child deadlocks",
+  )
+})
+
+await check("exportSessionTo survives a child that exits before the pipe drains", async () => {
+  const vault = path.join(root, "race-vault")
+  store.setVault(vault)
+  await config.prepareVault(vault)
+
+  process.env.FAKE_OPENCODE_SILENT = "1"
+  try {
+    // Regression: exportSessionTo used to attach its `close` listener after
+    // awaiting the pipeline. A child that writes nothing exits first, so that
+    // listener waited on an event that had already fired and never resolved.
+    const dest = path.join(vault, "sessions", "silent--ses_silent.json.gz")
+    const done = await Promise.race([
+      store.exportSessionTo("ses_silent", dest),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("exportSessionTo never settled")), 10000)),
+    ])
+    assert.equal(done, dest)
+  } finally {
+    delete process.env.FAKE_OPENCODE_SILENT
+  }
+})
+
 await fsp.rm(root, { recursive: true, force: true })
 
 process.stdout.write(`\n${passed + failed} archive checks passed${failed ? `, ${failed} FAILED` : ""}\n`)
