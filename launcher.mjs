@@ -299,8 +299,7 @@ async function clearFlow({ yes = false, wait = false, whenClosed = false } = {})
   }
 
   const stats = await store.vaultStats()
-  const doomed = Math.max(0, counts.sessions - keep.length)
-  if (doomed === 0 && stats.sessions === 0) {
+  if (counts.sessions === 0 && stats.sessions === 0) {
     info("Nothing to clear.")
     await notify("Nothing to clear.")
     await writeClearLog("nothing to clear")
@@ -334,16 +333,26 @@ async function clearFlow({ yes = false, wait = false, whenClosed = false } = {})
     // slow, and a promise of reversibility that never held.
     const done = await store.clearOpencodeHistory({ keep })
     const { removed } = await store.clearVault()
-    info(`Deleted ${done.after} of ${done.before} sessions, and ${removed} archives.`)
+    // Counted from the two ends, not from what we hoped to delete. The keep set
+    // grows to include subagents, so a number predicted up front is a guess, and
+    // a guess printed as a result is how "Deleted 2 of 2" happens.
+    const deleted = Math.max(0, done.before - done.after)
+    if (deleted === 0 && removed === 0) {
+      info("Nothing to clear: the only sessions left are the one you are in.")
+      await notify("Nothing to clear.")
+      await writeClearLog("nothing to clear")
+      return
+    }
+    info(`Deleted ${deleted} sessions and ${removed} archives.`)
     if (done.kept) info(`Kept ${done.kept} session(s): the one you are in.`)
     if (!done.compacted) {
       // Not a failure. The rows are gone; VACUUM just could not take the file
       // while opencode holds the database open.
       info("The file shrinks to match once you close opencode.")
     }
-    await notify(doomed ? `Cleared ${doomed} sessions.` : "History cleared.")
+    await notify(`Cleared ${deleted} sessions.`)
     await writeClearLog(
-      `cleared ${doomed} opencode sessions (${counts.messages} messages, ${counts.events} events) and ${removed} archives, kept ${done.kept}`,
+      `cleared ${deleted} opencode sessions (${counts.messages} messages, ${counts.events} events) and ${removed} archives, kept ${done.kept}`,
     )
   } catch (error) {
     info(`Clear failed: ${error.message}`)
