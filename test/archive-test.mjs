@@ -103,6 +103,145 @@ await check("planAutoArchive ignores rows with no directory", () => {
   assert.deepEqual(store.planAutoArchive(projects, rows, [], 10), [])
 })
 
+await check("planAutoArchive gives a duplicated folder to the most recently used project", () => {
+  // An index written by an older version can still hold two names for one
+  // folder. Array order must not decide this, or the project the user just
+  // added silently receives nothing and looks broken.
+  const folder = path.join(root, "code", "app")
+  const projects = [
+    { id: "old", name: "Old", folder, lastUsed: 1_000 },
+    { id: "new", name: "New", folder, lastUsed: 9_000 },
+  ]
+  const rows = [{ id: "ses_dup111", title: "Work", directory: foreign(folder), messages: 1 }]
+  assert.equal(store.planAutoArchive(projects, rows, [], 10)[0].project.name, "New")
+  assert.deepEqual(
+    store.planAutoArchive([projects[1], projects[0]], rows, [], 10).map((item) => item.project.name),
+    ["New"],
+    "order in the array must not change the winner",
+  )
+})
+
+await check("duplicateFolders names the projects sharing a folder", () => {
+  const folder = path.join(root, "code", "app")
+  const projects = [
+    { id: "a", name: "A", folder },
+    { id: "b", name: "B", folder: foreign(folder) },
+    { id: "c", name: "C", folder: path.join(root, "code", "c") },
+  ]
+  assert.deepEqual(store.duplicateFolders(projects), [["A", "B"]])
+  assert.deepEqual(store.duplicateFolders([projects[0], projects[2]]), [])
+})
+
+await check("registering the same folder again renames the project instead of forking it", async () => {
+  const vault = path.join(root, "alias-vault")
+  store.setVault(vault)
+  await config.prepareVault(vault)
+  const folder = path.join(root, "code", "shared")
+  await fsp.mkdir(folder, { recursive: true })
+
+  await store.upsertProject({ name: "First", folder })
+  await store.upsertProject({ name: "Second", folder: foreign(folder) })
+  const projects = (await store.readIndex()).projects
+  assert.equal(projects.length, 1, `one folder is one project, got ${projects.map((p) => p.name).join(", ")}`)
+  assert.equal(projects[0].name, "Second", "the newest name wins")
+  assert.deepEqual(store.duplicateFolders(projects), [])
+})
+
+await check("re-registering a folder collapses aliases left by an older version", async () => {
+  const vault = path.join(root, "legacy-vault")
+  store.setVault(vault)
+  await config.prepareVault(vault)
+  const folder = path.join(root, "code", "legacy")
+  await fsp.mkdir(folder, { recursive: true })
+
+  // Write the index by hand: upsertProject no longer creates these, but a vault
+  // that already has them must heal rather than stay broken.
+  await fsp.writeFile(
+    path.join(vault, "index.json"),
+    JSON.stringify({
+      projects: ["Jumanji", "james", "runpod"].map((name, i) => ({
+        id: name.toLowerCase(),
+        name,
+        folder,
+        createdAt: 1_000 + i,
+        lastUsed: 1_000 + i,
+      })),
+      sessions: [],
+    }),
+  )
+  assert.deepEqual(store.duplicateFolders((await store.readIndex()).projects).flat().sort(), ["Jumanji", "james", "runpod"])
+
+  await store.upsertProject({ name: "runpod", folder })
+  const index = await store.readIndex()
+  assert.deepEqual(index.projects.map((p) => p.name), ["runpod"])
+  assert.deepEqual(store.duplicateFolders(index.projects), [])
+})
+
+await check("collapsing aliases relabels every archived session, not just one", async () => {
+  const vault = path.join(root, "alias-sessions")
+  store.setVault(vault)
+  await config.prepareVault(vault)
+  const folder = path.join(root, "code", "many")
+
+  // The state this bug produced: one folder under three names, with sessions
+  // already filed under each of them.
+  await fsp.writeFile(
+    path.join(vault, "index.json"),
+    JSON.stringify({
+      projects: ["Jumanji", "james", "runpod"].map((name, i) => ({
+        id: name.toLowerCase(),
+        name,
+        folder,
+        createdAt: 1_000 + i,
+        lastUsed: 1_000 + i,
+      })),
+      sessions: ["Jumanji", "james", "runpod"].map((name, i) => ({
+        label: `work-000${i}`,
+        sessionID: `ses_ses00${i}`,
+        title: `Work ${i}`,
+        directory: folder,
+        project: name,
+        file: `sessions/work-000${i}--ses_ses00${i}.json.gz`,
+        savedAt: 2_000 + i,
+        messages: 1,
+        bytes: 1,
+      })),
+    }),
+  )
+
+  await store.upsertProject({ name: "runpod", folder })
+  const index = await store.readIndex()
+  assert.deepEqual(index.projects.map((p) => p.name), ["runpod"])
+  assert.equal(index.sessions.length, 3, "none should be dropped")
+  assert.deepEqual(
+    index.sessions.map((s) => s.project),
+    ["runpod", "runpod", "runpod"],
+    "no session should be left filed under a name that no longer exists",
+  )
+})
+
+await check("renaming a project carries its archived sessions across", async () => {
+  const vault = path.join(root, "rename-vault")
+  store.setVault(vault)
+  await config.prepareVault(vault)
+  const folder = path.join(root, "code", "renamed")
+  await fsp.mkdir(folder, { recursive: true })
+  await store.upsertProject({ name: "Before", folder })
+
+  process.env.OPENCODE_BIN = FAKE
+  process.env.FAKE_OPENCODE_ROWS = JSON.stringify([
+    { id: "ses_ren001", title: "Work", directory: foreign(folder), messages: 2, timeUpdated: 1_000 },
+  ])
+  const saved = await store.archiveSessionById("ses_ren001", { refresh: 0 })
+  assert.equal(saved.project, "Before")
+
+  await store.upsertProject({ name: "After", folder })
+  const [entry] = (await store.readIndex()).sessions
+  assert.equal(entry.project, "After", "the load screen groups by this name, so it has to move")
+  assert.equal(entry.sessionID, "ses_ren001")
+  assert.ok(fs.existsSync(store.entryFile(entry)), "the archive file itself must not move")
+})
+
 await check("autoArchive is a no-op when no project is registered", async () => {
   const vault = path.join(root, "empty-vault")
   store.setVault(vault)

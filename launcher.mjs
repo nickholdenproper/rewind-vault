@@ -489,6 +489,13 @@ async function doctorFlow() {
   if (status.installed && !status.current) {
     problems.push(`the live saving plugin is stale — run rewind plugin install`)
   }
+  if (state.exists) {
+    // Worth calling out loudly: with aliases on one folder only one project can
+    // ever receive sessions, and the others just look broken.
+    for (const names of store.duplicateFolders(await store.readIndex().then((i) => i.projects))) {
+      problems.push(`${names.length} projects share one folder (${names.join(", ")}) — sessions go to one of them; re-add that folder to collapse them`)
+    }
+  }
 
   info("")
   info(
