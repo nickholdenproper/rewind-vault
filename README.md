@@ -128,6 +128,24 @@ invisible: it never prints to the terminal, never throws (an exception here
 would surface as an opencode crash), and collapses bursts of events so
 subagent chatter does not spawn a process per message.
 
+### When saving stops
+
+Live saving can go quiet without ever telling you why. If sessions stop landing
+in the vault, start here:
+
+```sh
+rewind plugin status    # "stale" means the plugin points at a rewind that moved
+rewind doctor           # node, opencode, the database and the vault in one pass
+```
+
+`stale` is the one to look for. It means opencode is still loading the plugin,
+but it was written against a different install — typically an `npm update -g`
+that moved the package out from under it. Nothing is printed at the time, because
+the plugin cannot report an error without risking an opencode crash. Fix it
+with `rewind plugin install`, then restart opencode.
+
+If the plugin reports fine, the timer backstop below still covers you.
+
 ### The timer backstop
 
 rewind also refreshes the vault every two minutes while opencode runs, and once
