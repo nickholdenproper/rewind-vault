@@ -1,5 +1,9 @@
 # rewind-vault
 
+[![npm](https://img.shields.io/npm/v/rewind-vault)](https://www.npmjs.com/package/rewind-vault)
+[![CI](https://github.com/nickholdenproper/rewind-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/nickholdenproper/rewind-vault/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/rewind-vault)](./LICENSE)
+
 Archive, restore and back up [opencode](https://opencode.ai) sessions from a menu
 that looks like opencode's own TUI.
 
@@ -21,7 +25,7 @@ its own CLI (`opencode export`, `opencode import`, `opencode db`).
 
 ## Install
 
-opencode first, then rewind:
+Needs **Node 20 or newer** and an existing opencode install. Then:
 
 ```sh
 npm install -g opencode-ai
@@ -217,6 +221,28 @@ prompting, or you can pin it explicitly:
 ```sh
 REWIND_VAULT=/mnt/backups/rewind rewind history backup-db
 ```
+
+## Uninstalling
+
+Take the plugin out first, while `rewind` is still on your PATH:
+
+```sh
+rewind plugin uninstall
+npm uninstall -g rewind-vault
+```
+
+That order is not fussy. The plugin has the absolute path to its worker baked
+in, and that worker lives inside the npm package. Remove the package first and
+opencode is left loading a plugin that points at a file which no longer exists.
+The plugin swallows such errors deliberately — throwing inside opencode would
+present as an opencode crash — so nothing is printed and live saving is simply
+stopped, with no clue why. `rewind plugin status` reports it as stale.
+
+Deleting `~/.config/opencode/plugins/rewind-live.js` by hand does the same job
+if the CLI has already gone.
+
+Your vault and config are left alone, as are opencode's own sessions. When you
+want them gone, delete the folders yourself — `rewind where` prints both paths.
 
 ## Environment variables
 
