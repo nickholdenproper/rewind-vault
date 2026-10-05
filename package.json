@@ -1,7 +1,7 @@
 {
   "name": "rewind-vault",
   "version": "0.1.1",
-  "description": "Archive, restore and back up opencode sessions from a menu that looks like opencode's own TUI",
+  "description": "A session vault for opencode — archives every session as you work, and restores any of them from a TUI of its own",
   "keywords": [
     "opencode",
     "sessions",

@@ -4,8 +4,8 @@
 [![CI](https://github.com/nickholdenproper/rewind-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/nickholdenproper/rewind-vault/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/rewind-vault)](./LICENSE)
 
-Archive, restore and back up [opencode](https://opencode.ai) sessions from a menu
-that looks like opencode's own TUI.
+A session vault for [opencode](https://opencode.ai) — archives every session as
+you work, and restores any of them from a TUI of its own.
 
 `rewind` gives you one screen for the things you actually want to do with AI
 session history:
