@@ -263,6 +263,31 @@ temp folder, so they never touch your own vault. The archive suites point
 `OPENCODE_BIN` at `test/fixtures/fake-opencode.mjs`, which answers `db` and
 `export` and reproduces SQLite's byte-exact `IN (...)` matching.
 
+## Releases
+
+Releases are published by CI, not from a laptop. Pushing a `v*` tag runs
+`.github/workflows/publish.yml`, which tests the package and then publishes it.
+
+```sh
+npm version patch
+git push --follow-tags
+```
+
+The workflow authenticates to npm with GitHub Actions OIDC, using a [trusted
+publisher](https://docs.npmjs.com/trusted-publishers) configured for this
+repository. There is no npm token in this repository and none is needed, so
+there is nothing to leak or rotate. npm attaches a provenance attestation to
+each release automatically.
+
+Two things worth knowing before you tag:
+
+- Tag the commit you want to release. GitHub reads workflow files from the
+  tagged commit, so a tag on an older commit publishes nothing at all.
+- A version number can never be reused. Once `0.1.1` is on npm it stays there,
+  even if you unpublish, so get the number right.
+
+`ci.yml` runs on every push and pull request and never touches the registry.
+
 ## License
 
 MIT
