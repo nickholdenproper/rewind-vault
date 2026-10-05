@@ -25,7 +25,9 @@ its own CLI (`opencode export`, `opencode import`, `opencode db`).
 
 ## Install
 
-Needs **Node 20 or newer** and an existing opencode install. Then:
+Needs **Node 20 or newer** and **opencode 1.2.4 or newer**. rewind drives opencode
+through its `db`, `export` and `import` commands, and `db` is the one that arrived
+last — in 1.2.4. `rewind doctor` says so plainly if yours is older.
 
 ```sh
 npm install -g opencode-ai

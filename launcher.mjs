@@ -645,6 +645,9 @@ async function doctorFlow() {
   if (!version) problems.push("opencode is not on PATH")
   if (!db) problems.push("opencode's session database was not found")
   if (version && !db) problems.push("opencode runs but cannot reach its database")
+  if (store.opencodeTooOld(version)) {
+    problems.push(`opencode ${version} is older than ${store.MIN_OPENCODE}, which rewind needs for export/import/db — run npm install -g opencode-ai@latest`)
+  }
   if (status.installed && !status.current) {
     problems.push(`the live saving plugin is stale — run rewind plugin install`)
   }

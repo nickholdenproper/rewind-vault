@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 const here = path.dirname(fileURLToPath(import.meta.url))
 const suites = [
   "config-test.mjs",
+  "version-test.mjs",
   "first-run-test.mjs",
   "archive-test.mjs",
   "archive-failure-test.mjs",

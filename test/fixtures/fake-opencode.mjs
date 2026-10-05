@@ -90,7 +90,7 @@ if (command === "export") {
 }
 
 if (command === "--version") {
-  process.stdout.write("0.0.0-fake\n")
+  process.stdout.write("1.18.0-fake\n")
   process.exit(0)
 }
 
