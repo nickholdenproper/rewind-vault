@@ -265,19 +265,13 @@ temp folder, so they never touch your own vault. The archive suites point
 
 ## Releases
 
-Releases are published by CI, not from a laptop. Pushing a `v*` tag runs
-`.github/workflows/publish.yml`, which tests the package and then publishes it.
+Releases are published by CI. Pushing a `v*` tag runs
+`.github/workflows/publish.yml`, which tests the package and publishes it.
 
 ```sh
 npm version patch
 git push --follow-tags
 ```
-
-The workflow authenticates to npm with GitHub Actions OIDC, using a [trusted
-publisher](https://docs.npmjs.com/trusted-publishers) configured for this
-repository. There is no npm token in this repository and none is needed, so
-there is nothing to leak or rotate. npm attaches a provenance attestation to
-each release automatically.
 
 Two things worth knowing before you tag:
 
